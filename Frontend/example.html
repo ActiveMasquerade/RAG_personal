@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RAG Tester</title>
+
+    <style>
+        body {
+            max-width: 900px;
+            margin: 40px auto;
+            padding: 0 20px;
+            font-family: system-ui, sans-serif;
+        }
+
+        section {
+            margin-bottom: 2rem;
+            padding: 1rem;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+        }
+
+        textarea {
+            width: 100%;
+            min-height: 120px;
+            resize: vertical;
+        }
+
+        input[type="text"] {
+            width: 100%;
+            padding: 0.5rem;
+            box-sizing: border-box;
+        }
+
+        button {
+            margin-top: 1rem;
+            padding: 0.5rem 1rem;
+            cursor: pointer;
+        }
+
+        pre {
+            background: #f5f5f5;
+            padding: 1rem;
+            border-radius: 6px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>RAG Tester</h1>
+
+    <section>
+        <h2>Upload Document</h2>
+
+        <input
+            type="file"
+            id="fileInput"
+        >
+
+        <button id="uploadButton">
+            Upload
+        </button>
+
+        <pre id="uploadOutput"></pre>
+    </section>
+
+    <section>
+        <h2>Document IDs</h2>
+
+        <textarea
+            id="documentsInput"
+            placeholder="One document ID per line"
+        ></textarea>
+    </section>
+
+    <section>
+        <h2>Query</h2>
+
+        <input
+            type="text"
+            id="queryInput"
+            placeholder="Ask something..."
+        >
+
+        <button id="queryButton">
+            Retrieve
+        </button>
+    </section>
+
+    <section>
+        <h2>Final Prompt</h2>
+        <pre id="promptOutput"></pre>
+    </section>
+
+    <section>
+        <h2>Retrieved Chunks</h2>
+        <pre id="contextOutput"></pre>
+    </section>
+
+    <script>
+
+        const API_URL = "http://localhost:8000";
+
+        const uploadButton =
+            document.getElementById("uploadButton");
+
+        const queryButton =
+            document.getElementById("queryButton");
+
+        uploadButton.addEventListener(
+            "click",
+            uploadDocument
+        );
+
+        queryButton.addEventListener(
+            "click",
+            runQuery
+        );
+
+        async function uploadDocument() {
+
+            const file =
+                document.getElementById("fileInput")
+                    .files[0];
+
+            if (!file) {
+                alert("Select a file first.");
+                return;
+            }
+
+            const formData = new FormData();
+
+            formData.append(
+                "file",
+                file
+            );
+
+            try {
+
+                const response =
+                    await fetch(
+                        `${API_URL}/upload`,
+                        {
+                            method: "POST",
+                            body: formData
+                        }
+                    );
+
+                const data =
+                    await response.json();
+
+                document.getElementById(
+                    "uploadOutput"
+                ).textContent =
+                    JSON.stringify(
+                        data,
+                        null,
+                        2
+                    );
+
+                if (data.document_id) {
+
+                    const docsBox =
+                        document.getElementById(
+                            "documentsInput"
+                        );
+
+                    docsBox.value +=
+                        data.document_id + "\n";
+                }
+
+            } catch (error) {
+
+                document.getElementById(
+                    "uploadOutput"
+                ).textContent =
+                    error.message;
+            }
+        }
+
+        async function runQuery() {
+
+            const docs =
+                document
+                    .getElementById(
+                        "documentsInput"
+                    )
+                    .value
+                    .split("\n")
+                    .map(doc => doc.trim())
+                    .filter(Boolean);
+
+            const query =
+                document
+                    .getElementById(
+                        "queryInput"
+                    )
+                    .value
+                    .trim();
+
+            if (!query) {
+                alert("Enter a query.");
+                return;
+            }
+
+            try {
+
+                const response =
+                    await fetch(
+                        `http://127.0.0.1:8000/query`,
+                        {
+                            method: "POST",
+
+                            headers: {
+                                "Content-Type":
+                                    "application/json"
+                            },
+
+                            body: JSON.stringify({
+                                docs,
+                                query
+                            })
+                        }
+                    );
+
+                const data =
+                    await response.json();
+
+                document.getElementById(
+                    "promptOutput"
+                ).textContent =
+                    data.final_query;
+
+                document.getElementById(
+                    "contextOutput"
+                ).textContent =
+                    JSON.stringify(
+                        data.context,
+                        null,
+                        2
+                    );
+
+            } catch (error) {
+
+                document.getElementById(
+                    "contextOutput"
+                ).textContent =
+                    error.message;
+            }
+        }
+
+    </script>
+
+</body>
+</html>

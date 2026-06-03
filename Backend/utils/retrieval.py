@@ -1,7 +1,7 @@
 from langchain_ollama import OllamaLLM, OllamaEmbeddings
 from langchain_chroma import Chroma
 
-def retrieve(docs):
+def retrieve(docs,query):
     embedding_model = OllamaEmbeddings(model="embeddinggemma:300m")
 
     vector_store = Chroma(
@@ -10,13 +10,12 @@ def retrieve(docs):
         embedding_function=embedding_model
     )
 
-    query = input("input your query: ")
     
 
     chunks = vector_store.similarity_search(query=query,
                                             k=5,
                                             filter={
-                                                "file_name":{
+                                                "document_id":{
                                                     "$in": docs
                                                 },
                                                 
@@ -31,12 +30,9 @@ def retrieve(docs):
     context:{context}
 
     """
-    i=1
-    for chunk in chunks:
-        print(i)
-        print(str(chunk.page_content))
-        i+=1
-    return final_query
+    
+    return final_query, chunks
 if __name__ == "__main__":
     print("thanks for using retrieval")
-    retrieve(["AI Engineering.pdf"])
+    final, chunks = retrieve(["09c145f4-bfb8-4a29-abf6-98084ff7f9a6.pdf"], "what is the main question?")
+    print(final)

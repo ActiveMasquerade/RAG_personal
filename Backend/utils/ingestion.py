@@ -2,19 +2,17 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_ollama import OllamaEmbeddings
 from langchain_chroma import Chroma
-import pathlib
-def ingest(file_path):
-    path = pathlib.Path(file_path)
-    name = path.name
-    print(name)
-    loader = PyPDFLoader(file_path)
-    documents = loader.load()
+from langchain_core.documents import Document
+
+def ingest(documents: Document):
+    # path = pathlib.Path(file_path)
+    # name = path.name
     chunker = RecursiveCharacterTextSplitter(chunk_size = 1000,
                                          chunk_overlap = 200)
     chunks = chunker.split_documents(documents)
     EmbeddingModel = OllamaEmbeddings(model = 'embeddinggemma:300m')
-    for chunk in chunks:
-        chunk.metadata["file_name"] = name 
+    for index,chunk in enumerate(chunks):
+        chunk.metadata["chunk_index"] = index
     storage = Chroma(
         collection_name="local_rag",
         embedding_function = EmbeddingModel,
@@ -26,9 +24,8 @@ def ingest(file_path):
 
     )
 
-
 if __name__ == "__main__":
     print("hello thanks for using ingestion")
-    ingest("/home/kanisss/RAG_personal/Backend/AI Engineering.pdf")
+
     
     
