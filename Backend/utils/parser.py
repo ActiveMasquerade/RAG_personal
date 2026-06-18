@@ -4,7 +4,7 @@ from langchain_community.document_loaders import TextLoader
 from langchain_text_splitters import MarkdownHeaderTextSplitter
 from langchain_core.documents import Document
 from rich.pretty import pprint
-def parseCSV(file_path: str,document_id:str, delimiter: str=",") -> list[Document]:
+def parseCSV(file_path: str,document_id:str, filename: str, delimiter: str="," ) -> list[Document]:
     loader = CSVLoader(
         file_path=file_path,
         csv_args = {"delimiter":delimiter}
@@ -14,14 +14,16 @@ def parseCSV(file_path: str,document_id:str, delimiter: str=",") -> list[Documen
         document.metadata["delimiter"] = delimiter
         document.metadata["document_id"] = document_id
         document.metadata["file_type"] = "csv"
+        document.metadata["file_name"] = filename
     print(csv_document[0].metadata)
     return csv_document;
-def parsePDF(file_path: str, document_id: str) -> list[Document]:
+def parsePDF(file_path: str, document_id: str, filename: str) -> list[Document]:
     loader = PyPDFLoader(
         extraction_mode="layout",
         file_path=file_path
         )
     pdf_document: list[Document] = loader.load()
+    pprint(pdf_document[0].metadata)
     for document in pdf_document:
         document.metadata = {
             "page": document.metadata.get("page"),
@@ -29,9 +31,10 @@ def parsePDF(file_path: str, document_id: str) -> list[Document]:
             "file_type": "pdf",
             "document_id": document_id,
             "total_pages" : document.metadata.get("total_pages"),
+            "file_name" : filename
         }
     return pdf_document
-def parseMD(file_path: str, document_id: str) -> list[Document]:
+def parseMD(file_path: str, document_id: str, filename:str) -> list[Document]:
     loader = TextLoader(
         file_path=file_path,
         encoding="utf-8"
@@ -49,8 +52,9 @@ def parseMD(file_path: str, document_id: str) -> list[Document]:
     for doc in documents:
         doc.metadata["file_type"] = "md"
         doc.metadata["document_id"] = document_id
+        doc.metadata["file_name"] = filename
     return documents
-def parseTXT(file_path:str,document_id:str) -> list[Document]:
+def parseTXT(file_path:str,document_id:str, filename:str) -> list[Document]:
     loader = TextLoader(
         file_path=file_path,
         encoding="utf-8"
@@ -59,6 +63,7 @@ def parseTXT(file_path:str,document_id:str) -> list[Document]:
     for doc in document:
         doc.metadata["document_id"] = document_id
         doc.metadata["file_type"] = "txt"
+        doc.metadata["file_name"] = filename
     return document
 if __name__ == "__main__":
     docs = parseTXT("/home/kanisss/RAG_personal/Backend/documents/README.md", "12345")
