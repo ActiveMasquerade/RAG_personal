@@ -1,78 +1,123 @@
 <!DOCTYPE html>
+
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>RAG Tester</title>
 
-    <style>
-        body {
-            max-width: 900px;
-            margin: 40px auto;
-            padding: 0 20px;
-            font-family: system-ui, sans-serif;
-        }
+<style>
+    * {
+        box-sizing: border-box;
+    }
 
-        section {
-            margin-bottom: 2rem;
-            padding: 1rem;
-            border: 1px solid #ddd;
-            border-radius: 8px;
-        }
+    body {
+        max-width: 1100px;
+        margin: 40px auto;
+        padding: 0 20px;
+        font-family: system-ui, sans-serif;
+    }
 
-        textarea {
-            width: 100%;
-            min-height: 120px;
-            resize: vertical;
-        }
+    h1 {
+        margin-bottom: 2rem;
+    }
 
-        input[type="text"] {
-            width: 100%;
-            padding: 0.5rem;
-            box-sizing: border-box;
-        }
+    section {
+        margin-bottom: 1.5rem;
+        padding: 1rem;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+    }
 
-        button {
-            margin-top: 1rem;
-            padding: 0.5rem 1rem;
-            cursor: pointer;
-        }
+    button {
+        padding: 0.6rem 1rem;
+        cursor: pointer;
+    }
 
-        pre {
-            background: #f5f5f5;
-            padding: 1rem;
-            border-radius: 6px;
-            overflow-x: auto;
-            white-space: pre-wrap;
-        }
-    </style>
+    input[type="text"] {
+        width: 100%;
+        padding: 0.75rem;
+    }
+
+    pre {
+        background: #f5f5f5;
+        padding: 1rem;
+        border-radius: 6px;
+        overflow-x: auto;
+        white-space: pre-wrap;
+    }
+
+    .row {
+        display: grid;
+        grid-template-columns: 350px 1fr;
+        gap: 1rem;
+    }
+
+    #documentsList {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+        max-height: 400px;
+        overflow-y: auto;
+    }
+
+    .document-item {
+        padding: 0.5rem;
+        border: 1px solid #ddd;
+        border-radius: 6px;
+    }
+
+    .document-name {
+        font-weight: 600;
+    }
+
+    .document-meta {
+        font-size: 0.85rem;
+        color: #666;
+    }
+
+    .controls {
+        display: flex;
+        gap: 0.5rem;
+        margin-bottom: 1rem;
+    }
+</style>
+
+
 </head>
 <body>
 
-    <h1>RAG Tester</h1>
+<h1>RAG Tester</h1>
+
+<section>
+    <h2>Upload Document</h2>
+
+    <input
+        type="file"
+        id="fileInput"
+    >
+
+    <button id="uploadButton">
+        Upload
+    </button>
+
+    <pre id="uploadOutput"></pre>
+</section>
+
+<div class="row">
 
     <section>
-        <h2>Upload Document</h2>
+        <h2>Documents</h2>
 
-        <input
-            type="file"
-            id="fileInput"
-        >
+        <div class="controls">
+            <button id="refreshDocsButton">
+                Refresh
+            </button>
+        </div>
 
-        <button id="uploadButton">
-            Upload
-        </button>
-
-        <pre id="uploadOutput"></pre>
-    </section>
-
-    <section>
-        <h2>Document IDs</h2>
-
-        <textarea
-            id="documentsInput"
-            placeholder="One document ID per line"
-        ></textarea>
+        <div id="documentsList">
+            Loading documents...
+        </div>
     </section>
 
     <section>
@@ -84,174 +129,286 @@
             placeholder="Ask something..."
         >
 
-        <button id="queryButton">
+        <button
+            id="queryButton"
+            style="margin-top: 1rem;"
+        >
             Retrieve
         </button>
-    </section>
 
-    <section>
-        <h2>Final Prompt</h2>
+        <h3>Final Prompt</h3>
         <pre id="promptOutput"></pre>
-    </section>
 
-    <section>
-        <h2>Retrieved Chunks</h2>
+        <h3>Retrieved Chunks</h3>
         <pre id="contextOutput"></pre>
     </section>
 
-    <script>
+</div>
 
-        const API_URL = "http://localhost:8000";
+<script>
 
-        const uploadButton =
-            document.getElementById("uploadButton");
+    const API_URL = "http://localhost:8000";
 
-        const queryButton =
-            document.getElementById("queryButton");
-
-        uploadButton.addEventListener(
-            "click",
-            uploadDocument
+    const uploadButton =
+        document.getElementById(
+            "uploadButton"
         );
 
-        queryButton.addEventListener(
-            "click",
-            runQuery
+    const queryButton =
+        document.getElementById(
+            "queryButton"
         );
 
-        async function uploadDocument() {
+    const refreshDocsButton =
+        document.getElementById(
+            "refreshDocsButton"
+        );
 
-            const file =
-                document.getElementById("fileInput")
-                    .files[0];
+    uploadButton.addEventListener(
+        "click",
+        uploadDocument
+    );
 
-            if (!file) {
-                alert("Select a file first.");
-                return;
-            }
+    queryButton.addEventListener(
+        "click",
+        runQuery
+    );
 
-            const formData = new FormData();
+    refreshDocsButton.addEventListener(
+        "click",
+        loadDocuments
+    );
 
-            formData.append(
-                "file",
-                file
+    async function loadDocuments() {
+
+        const container =
+            document.getElementById(
+                "documentsList"
             );
 
-            try {
+        try {
 
-                const response =
-                    await fetch(
-                        `${API_URL}/upload`,
-                        {
-                            method: "POST",
-                            body: formData
-                        }
-                    );
+            container.innerHTML =
+                "Loading...";
 
-                const data =
-                    await response.json();
+            const response =
+                await fetch(
+                    `${API_URL}/all-docs`
+                );
 
-                document.getElementById(
-                    "uploadOutput"
-                ).textContent =
-                    JSON.stringify(
-                        data,
-                        null,
-                        2
-                    );
+            const documents =
+                await response.json();
 
-                if (data.document_id) {
+            container.innerHTML = "";
 
-                    const docsBox =
-                        document.getElementById(
-                            "documentsInput"
-                        );
+            if (
+                !documents ||
+                documents.length === 0
+            ) {
 
-                    docsBox.value +=
-                        data.document_id + "\n";
-                }
+                container.innerHTML =
+                    "<p>No documents found.</p>";
 
-            } catch (error) {
-
-                document.getElementById(
-                    "uploadOutput"
-                ).textContent =
-                    error.message;
-            }
-        }
-
-        async function runQuery() {
-
-            const docs =
-                document
-                    .getElementById(
-                        "documentsInput"
-                    )
-                    .value
-                    .split("\n")
-                    .map(doc => doc.trim())
-                    .filter(Boolean);
-
-            const query =
-                document
-                    .getElementById(
-                        "queryInput"
-                    )
-                    .value
-                    .trim();
-
-            if (!query) {
-                alert("Enter a query.");
                 return;
             }
 
-            try {
+            documents.forEach(doc => {
 
-                const response =
-                    await fetch(
-                        `http://127.0.0.1:8000/query`,
-                        {
-                            method: "POST",
+                const id =
+                    doc._id;
 
-                            headers: {
-                                "Content-Type":
-                                    "application/json"
-                            },
+                const name =
+                    doc.file_name ??
+                    "Unknown";
 
-                            body: JSON.stringify({
+                const type =
+                    doc.file_type ??
+                    "unknown";
+
+                const div =
+                    document.createElement(
+                        "div"
+                    );
+
+                div.className =
+                    "document-item";
+
+                div.innerHTML = `
+                    <label>
+                        <input
+                            type="checkbox"
+                            value="${id}"
+                        >
+
+                        <span class="document-name">
+                            ${name}
+                        </span>
+
+                        <div class="document-meta">
+                            ${type}
+                        </div>
+                    </label>
+                `;
+
+                container.appendChild(
+                    div
+                );
+            });
+
+        } catch (error) {
+
+            container.innerHTML =
+                error.message;
+        }
+    }
+
+    async function uploadDocument() {
+
+        const file =
+            document.getElementById(
+                "fileInput"
+            ).files[0];
+
+        if (!file) {
+
+            alert(
+                "Select a file first."
+            );
+
+            return;
+        }
+
+        const formData =
+            new FormData();
+
+        formData.append(
+            "file",
+            file
+        );
+
+        try {
+
+            const response =
+                await fetch(
+                    `${API_URL}/upload`,
+                    {
+                        method: "POST",
+                        body: formData
+                    }
+                );
+
+            const data =
+                await response.json();
+
+            document.getElementById(
+                "uploadOutput"
+            ).textContent =
+                JSON.stringify(
+                    data,
+                    null,
+                    2
+                );
+
+            await loadDocuments();
+
+        } catch (error) {
+
+            document.getElementById(
+                "uploadOutput"
+            ).textContent =
+                error.message;
+        }
+    }
+
+    async function runQuery() {
+
+        const docs =
+            Array.from(
+                document.querySelectorAll(
+                    "#documentsList input:checked"
+                )
+            )
+            .map(
+                input => input.value
+            );
+
+        const query =
+            document
+                .getElementById(
+                    "queryInput"
+                )
+                .value
+                .trim();
+
+        if (!query) {
+
+            alert(
+                "Enter a query."
+            );
+
+            return;
+        }
+
+        if (docs.length === 0) {
+
+            alert(
+                "Select at least one document."
+            );
+
+            return;
+        }
+
+        try {
+
+            const response =
+                await fetch(
+                    `${API_URL}/query`,
+                    {
+                        method: "POST",
+
+                        headers: {
+                            "Content-Type":
+                                "application/json"
+                        },
+
+                        body:
+                            JSON.stringify({
                                 docs,
                                 query
                             })
-                        }
-                    );
+                    }
+                );
 
-                const data =
-                    await response.json();
+            const data =
+                await response.json();
 
-                document.getElementById(
-                    "promptOutput"
-                ).textContent =
-                    data.final_query;
+            document.getElementById(
+                "promptOutput"
+            ).textContent =
+                data.final_query;
 
-                document.getElementById(
-                    "contextOutput"
-                ).textContent =
-                    JSON.stringify(
-                        data.context,
-                        null,
-                        2
-                    );
+            document.getElementById(
+                "contextOutput"
+            ).textContent =
+                JSON.stringify(
+                    data.context,
+                    null,
+                    2
+                );
 
-            } catch (error) {
+        } catch (error) {
 
-                document.getElementById(
-                    "contextOutput"
-                ).textContent =
-                    error.message;
-            }
+            document.getElementById(
+                "contextOutput"
+            ).textContent =
+                error.message;
         }
+    }
 
-    </script>
+    loadDocuments();
+
+</script>
+
 
 </body>
 </html>
