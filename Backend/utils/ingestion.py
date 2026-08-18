@@ -1,30 +1,19 @@
-from langchain_community.document_loaders import PyPDFLoader
+import logging
+
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_ollama import OllamaEmbeddings
-from langchain_chroma import Chroma
 from langchain_core.documents import Document
 
-def ingest(documents: Document):
-    chunker = RecursiveCharacterTextSplitter(chunk_size = 1000,
-                                         chunk_overlap = 200)
-    chunks = chunker.split_documents(documents)
-    EmbeddingModel = OllamaEmbeddings(model = 'embeddinggemma:300m')
-    for index,chunk in enumerate(chunks):
-        chunk.metadata["chunk_index"] = index
-    storage = Chroma(
-        collection_name="local_rag",
-        embedding_function = EmbeddingModel,
-        persist_directory="/home/kaniss/RAG_personal/Backend/chromadb",
+from Backend.utils.clients import get_vector_store
 
-    )
-    storage.add_documents(
-        documents=chunks
+logger = logging.getLogger(__name__)
 
-    )
-    storage.persist()
 
-if __name__ == "__main__":
-    print("hello thanks for using ingestion")
-
-    
-    
+def ingest(documents: list[Document]) -> None:
+    try:
+        chunker = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        chunks = chunker.split_documents(documents)
+        for index, chunk in enumerate(chunks):
+            chunk.metadata["chunk_index"] = index
+        get_vector_store().add_documents(documents=chunks)
+    except Exception:
+        logger.exception("error in ingestion")

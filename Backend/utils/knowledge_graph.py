@@ -1,100 +1,128 @@
+import logging
 import math
 from collections import defaultdict
+from typing import Any, Dict, List
 
-from langchain_chroma import Chroma
-from langchain_ollama import OllamaEmbeddings
-
+from Backend.utils.clients import get_vector_store
 from Backend.utils.database import get_all_docs
 
-
-def _cosine_similarity(first: list[float], second: list[float]) -> float:
-    dot_product = sum(a * b for a, b in zip(first, second))
-    first_norm = math.sqrt(sum(a * a for a in first))
-    second_norm = math.sqrt(sum(b * b for b in second))
-    if first_norm == 0 or second_norm == 0:
-        return 0
-    return dot_product / (first_norm * second_norm)
+logger = logging.getLogger(__name__)
 
 
-def _average_embedding(embeddings: list[list[float]]) -> list[float]:
+def helper_calculate_cosine_similarity(vec_a: List[float], vec_b: List[float]) -> float:
+    """Calculates the cosine similarity between two vectors."""
+    dot_product = sum(a * b for a, b in zip(vec_a, vec_b))
+    norm_a = math.sqrt(sum(a * a for a in vec_a))
+    norm_b = math.sqrt(sum(b * b for b in vec_b))
+    
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot_product / (norm_a * norm_b)
+
+
+def helper_calculate_centroid(embeddings: List[List[float]]) -> List[float]:
+    """Averages a list of embedding vectors to find their center point (centroid)."""
     if not embeddings:
         return []
+    
     dimensions = len(embeddings[0])
-    return [sum(vector[index] for vector in embeddings) / len(embeddings) for index in range(dimensions)]
+    count = len(embeddings)
+    return [sum(vector[i] for vector in embeddings) / count for i in range(dimensions)]
 
 
-def _token_relevance(first: dict, second: dict) -> float:
-    first_tokens = set(first.get("file_name", "").lower().replace(".", " ").replace("_", " ").split())
-    second_tokens = set(second.get("file_name", "").lower().replace(".", " ").replace("_", " ").split())
-    if first.get("file_type") == second.get("file_type"):
-        first_tokens.add(first.get("file_type", ""))
-        second_tokens.add(second.get("file_type", ""))
-    union = first_tokens | second_tokens
+def helper_calculate_token_relevance(doc_a: Dict[str, Any], doc_b: Dict[str, Any]) -> float:
+    """Fallback relevance calculation using a Jaccard similarity of filename tokens."""
+    def extract_tokens(doc: Dict[str, Any]) -> set:
+        name = doc.get("file_name", doc.get("label", "")).lower()
+        return set(name.replace(".", " ").replace("_", " ").split())
+
+    tokens_a = extract_tokens(doc_a)
+    tokens_b = extract_tokens(doc_b)
+
+    # Boost relevance if they are the exact same file type
+    if doc_a.get("file_type") == doc_b.get("file_type") and doc_a.get("file_type"):
+        tokens_a.add(doc_a.get("file_type"))
+        tokens_b.add(doc_b.get("file_type"))
+        
+    union = tokens_a | tokens_b
     if not union:
-        return 0
-    return len(first_tokens & second_tokens) / len(union)
+        return 0.0
+        
+    return len(tokens_a & tokens_b) / len(union)
 
 
-async def build_knowledge_graph(user_id: str) -> dict:
+async def build_knowledge_graph(user_id: str) -> Dict[str, Any]:
     documents = await get_all_docs(user_id)
+    
     nodes = [
         {
-            "id": document["_id"],
-            "label": document["original_file_name"],
-            "file_type": document["file_type"],
-            "uploaded_at": str(document.get("upload_time", "")),
+            "id": str(doc["_id"]),
+            "label": doc.get("original_file_name", "Unknown"),
+            "file_type": doc.get("file_type", "unknown"),
+            "uploaded_at": str(doc.get("upload_time", "")),
             "chunk_count": 0,
         }
-        for document in documents
+        for doc in documents
     ]
+    
     node_by_id = {node["id"]: node for node in nodes}
-    embeddings_by_document: dict[str, list[list[float]]] = defaultdict(list)
+    embeddings_by_document: Dict[str, List[List[float]]] = defaultdict(list)
 
     try:
-        vector_store = Chroma(
-            collection_name="local_rag",
-            persist_directory="/home/kanisss/RAG_personal/Backend/chromadb",
-            embedding_function=OllamaEmbeddings(model="embeddinggemma:300m"),
-        )
-        collection = vector_store._collection
-        stored_chunks = collection.get(
+        vector_store = get_vector_store()
+
+        stored_chunks = vector_store._collection.get(
             where={"user_id": user_id},
             include=["embeddings", "metadatas"],
         )
-        for embedding, metadata in zip(
-            stored_chunks.get("embeddings", []),
-            stored_chunks.get("metadatas", []),
-        ):
-            document_id = metadata.get("document_id")
-            if document_id not in node_by_id:
-                continue
-            node_by_id[document_id]["chunk_count"] += 1
-            embeddings_by_document[document_id].append(list(embedding))
+
+        for embedding, metadata in zip(stored_chunks.get("embeddings", []), stored_chunks.get("metadatas", [])):
+            doc_id = metadata.get("document_id")
+            if doc_id in node_by_id:
+                node_by_id[doc_id]["chunk_count"] += 1
+                embeddings_by_document[doc_id].append(list(embedding))
+
     except Exception:
+        # If Chroma fails, we gracefully fallback to token-based relevance
+        logger.exception("Knowledge graph Chroma lookup failed")
         embeddings_by_document = defaultdict(list)
 
+    # Calculate the central vector representing each document
     centroids = {
-        document_id: _average_embedding(embeddings)
-        for document_id, embeddings in embeddings_by_document.items()
+        doc_id: helper_calculate_centroid(embeddings)
+        for doc_id, embeddings in embeddings_by_document.items()
         if embeddings
     }
 
     links = []
-    for left_index, left in enumerate(nodes):
-        for right in nodes[left_index + 1:]:
-            if left["id"] in centroids and right["id"] in centroids:
-                relevance = max(0, _cosine_similarity(centroids[left["id"]], centroids[right["id"]]))
+    
+    # Cross-reference every document to build connections
+    for i, left_node in enumerate(nodes):
+        for right_node in nodes[i + 1:]:
+            left_id = left_node["id"]
+            right_id = right_node["id"]
+            
+            # Determine relevance strategy
+            if left_id in centroids and right_id in centroids:
+                relevance = helper_calculate_cosine_similarity(centroids[left_id], centroids[right_id])
             else:
-                relevance = _token_relevance(left, right)
-            if relevance <= 0:
-                continue
-            links.append(
-                {
-                    "source": left["id"],
-                    "target": right["id"],
-                    "relevance": round(relevance, 4),
-                }
-            )
+                relevance = helper_calculate_token_relevance(left_node, right_node)
+            
+            # Clamp relevance to prevent negative cosine similarities
+            relevance = max(0.0, relevance)
+            
+            if relevance > 0:
+                links.append({
+                    "source": left_id,
+                    "target": right_id,
+                    "relevance": round(relevance, 4), # Explicitly format the relevance score for the frontend
+                })
 
+    # Sort connections by highest relevance and cap the output map size
     links.sort(key=lambda link: link["relevance"], reverse=True)
-    return {"nodes": nodes, "links": links[: max(len(nodes) * 3, 12)]}
+    max_links = max(len(nodes) * 3, 12)
+    
+    return {
+        "nodes": nodes,
+        "links": links[:max_links]
+    }

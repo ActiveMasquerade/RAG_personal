@@ -135,5 +135,8 @@ dependencies = [
     "zstandard==0.25.0",
 ]
 
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
 [tool.setuptools]
 packages = ["Backend", "Backend.schemas", "Backend.utils"]

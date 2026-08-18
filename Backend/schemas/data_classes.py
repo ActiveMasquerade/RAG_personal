@@ -24,6 +24,7 @@ class QueryRequest(BaseModel):
     docs: list[str]
     query : str
     chat_history: list["ChatMessage"] = Field(default_factory=list)
+    threshold: int = Field(default=75, ge=0, le=100)
 
 
 class Mongo_Document(BaseModel):
@@ -58,3 +59,47 @@ class Chat(BaseModel):
     chat_name: str
     created_at: datetime
     updated_at: datetime
+
+
+class EvalQuestion(BaseModel):
+    id: str | None = None
+    user_id: str
+    query: str
+    expected_document_id: str
+    expected_document_name: str | None = None
+    expected_chunk_index: int | None = None
+    source_excerpt: str
+    created_at: datetime
+
+
+class EvalGenerateRequest(BaseModel):
+    num_questions: int = Field(default=10, ge=1, le=50)
+    doc_ids: list[str] | None = None
+
+
+class EvalRunRequest(BaseModel):
+    doc_ids: list[str] | None = None
+    k: int = Field(default=5, ge=1, le=20)
+
+
+class EvalQueryResult(BaseModel):
+    question_id: str | None = None
+    query: str
+    expected_document_id: str
+    retrieved_document_ids: list[str]
+    hit: bool
+    reciprocal_rank: float
+    precision: float
+    recall: float
+
+
+class EvalRunSummary(BaseModel):
+    id: str | None = None
+    user_id: str
+    k: int
+    num_questions: int
+    hit_rate: float
+    mrr: float
+    precision_at_k: float
+    recall_at_k: float
+    created_at: datetime
