@@ -1,4 +1,3 @@
-import os
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
@@ -7,21 +6,18 @@ from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 
+from Backend.config import get_settings
 from Backend.schemas.data_classes import CurrentUser, RegisterRequest
 from Backend.utils.database import create_user, get_user_by_email, get_user_by_id
 
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
 password_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 def _jwt_secret() -> str:
-    secret = os.getenv("JWT_SECRET_KEY") or os.getenv("SECRET_KEY")
-    if not secret:
-        raise RuntimeError("JWT_SECRET_KEY or SECRET_KEY must be set")
-    return secret
+    return get_settings().jwt_secret_key
 
 
 def _public_user(user: dict) -> dict:
@@ -42,7 +38,9 @@ def verify_password(plain_password: str, password_hash: str) -> bool:
 
 def create_access_token(subject: str, expires_delta: timedelta | None = None) -> str:
     now = datetime.now(timezone.utc)
-    expires_at = now + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    expires_at = now + (
+        expires_delta or timedelta(minutes=get_settings().access_token_expire_minutes)
+    )
     header = {"alg": ALGORITHM, "typ": "JWT"}
     payload = {
         "sub": subject,

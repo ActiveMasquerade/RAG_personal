@@ -1,38 +1,31 @@
-from langchain_ollama import OllamaLLM, OllamaEmbeddings
-from langchain_chroma import Chroma
-import cohere
 import asyncio
-import os
+import logging
 
-OLLAMA_REWRITE_MODEL = os.getenv("OLLAMA_REWRITE_MODEL", "llama3.2:1b")
+from Backend.utils.clients import get_cohere_client, get_rewrite_llm, get_vector_store
 
+logger = logging.getLogger(__name__)
 
-def _message_text(message) -> str:
-    if hasattr(message, "model_dump"):
-        message = message.model_dump()
-    role = str(message.get("role", "")).strip()
-    content = str(message.get("content", "")).strip()
-    return f"{role}: {content}" if role and content else content
+RERANK_MODEL = "rerank-v4.0-fast"
+DEFAULT_THRESHOLD = 75
 
 
-def _rewrite_with_ollama(prompt: str) -> str:
-    llm = OllamaLLM(model=OLLAMA_REWRITE_MODEL)
-    return llm.invoke(prompt)
+def query_rewrite_helper(prompt: str) -> str:
+    return get_rewrite_llm().invoke(prompt)
 
 
-async def retrieve(docs, query, user_id: str, chat_history: list | None = None):
-    cohere_key = os.environ["COHERE_KEY"]
-    cohere_client = cohere.ClientV2(api_key=cohere_key)
-    k = 5
-    embedding_model = OllamaEmbeddings(model="embeddinggemma:300m")
+async def retrieve(
+    docs,
+    query,
+    user_id: str,
+    chat_history: list | None = None,
+    threshold: int = DEFAULT_THRESHOLD,
+    top_k: int = 5,
+):
+    k = top_k
     rewritten_query = await query_rewriter(chat_history or [], query)
-    vector_store = Chroma(
-        collection_name = "local_rag",
-        persist_directory="/home/kaniss/RAG_personal/Backend/chromadb",
-        embedding_function=embedding_model
-    )
+    vector_store = get_vector_store()
     chunks = vector_store.similarity_search(query=rewritten_query,
-                                            k= 20 ,
+                                            k= max(20, k) ,
                                             filter={
                                                 "$and": [
                                                     {
@@ -49,17 +42,20 @@ async def retrieve(docs, query, user_id: str, chat_history: list | None = None):
     if len(chunks)==0:
         return "", [],[]
 
-    refined_chunks_index = cohere_client.rerank(
-            model="rerank-v4.0-fast",
+    refined_chunks_index = get_cohere_client().rerank(
+            model=RERANK_MODEL,
             query=rewritten_query,
             documents=rerank_input_chunks,
             top_n = k,
 
     )
-    refined_chunks = [chunks[refined.index] for refined in refined_chunks_index.results]
+    results = refined_chunks_index.results
+    min_score = max(0.0, min(100, threshold)) / 100
+    kept_results = [r for r in results if r.relevance_score >= min_score] or results[:1]
+    refined_chunks = [chunks[refined.index] for refined in kept_results]
     context = '\n\n'.join(chunk.page_content for chunk in refined_chunks)
 
-    final_query = f"""answer the question below with the given context:
+    final_query = f"""answer the question below with the given context, make sure to use correct markdown, make use of headings, lists where necessary :
     question: {rewritten_query}
 
     context:{context}
@@ -78,30 +74,41 @@ async def retrieve(docs, query, user_id: str, chat_history: list | None = None):
     return final_query, refined_chunks, grounding
 
 async def query_rewriter(chat_log: list, query: str)-> str:
-    if not chat_log:
-        return query
+    if(len(chat_log)==0): return query
+    history = ""
+    for chat in chat_log:
+        chat = chat.model_dump()
+        role = chat.get("role", "")
+        content = chat.get("content","")
+        message = f"{role}:{content}"
+        history = "\n".join([history, message])
+    prompt = f"""
+Rewrite the latest question into a standalone search query.
 
-    history = "\n".join(_message_text(message) for message in chat_log[-10:])
-    prompt = f"""Rewrite the user's latest question as a standalone search query.
-Use the chat history only to resolve references. Keep the rewrite concise.
+Rules:
+1. Output ONLY the rewritten query.
+2. Do NOT explain.
+3. Do NOT justify.
+4. Do NOT describe what you changed.
+5. Do NOT write complete sentences unless they are the query itself.
+6. If no rewrite is needed, output the original question exactly.
 
-Chat history:
+Chat History:
 {history}
 
-Latest question: {query}
+Question:
+{query}
 
-Standalone search query:"""
+Query:
+"""
     try:
-        rewritten = await asyncio.to_thread(_rewrite_with_ollama, prompt)
+        rewritten = await asyncio.to_thread(query_rewrite_helper, prompt)
     except Exception:
+        logger.exception("returning original query due to ollama failure")
         return query
 
     rewritten = rewritten.strip().strip('"')
-    if not rewritten or len(rewritten) > 500:
+    logger.debug("rewritten query: %s", rewritten)
+    if not rewritten:
         return query
     return rewritten
-
-if __name__ == "__main__":
-    print("thanks for using retrieval")
-    final, chunks = retrieve(["09c145f4-bfb8-4a29-abf6-98084ff7f9a6.pdf"], "what is the main question?")
-    print(final)

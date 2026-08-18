@@ -1,37 +1,70 @@
-from typing import Annotated
-
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
-from fastapi.security import OAuth2PasswordRequestForm
+import logging
 import uuid
 from shutil import copyfileobj
-from pathlib import Path
+from typing import Annotated
+
+from dotenv import load_dotenv
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
-from rich.pretty import pprint
+from fastapi.responses import StreamingResponse
+from fastapi.security import OAuth2PasswordRequestForm
 
 #import from own modules
+from Backend.config import get_settings
+from Backend.utils.clients import get_ollama_client
+from Backend.utils.database import (
+    Mongo_document_upload,
+    create_chat,
+    delete_chat,
+    get_all_docs,
+    get_chats,
+    get_eval_questions,
+    get_eval_run,
+    get_eval_runs,
+    save_eval_questions,
+    save_eval_run,
+    update_chat,
+)
+from Backend.utils.evaluation import generate_golden_set, run_evaluation
 from Backend.utils.ingestion import ingest
-from Backend.utils.retrieval import retrieve
 from Backend.utils.knowledge_graph import build_knowledge_graph
 from Backend.utils.parser import parseCSV, parseMD, parsePDF, parseTXT
-from Backend.utils.database import Mongo_document_upload, create_chat, get_all_docs, get_chats, update_chat
-from Backend.schemas.data_classes import ChatCreateRequest, ChatUpdateRequest, LoginResponse, QueryRequest, RegisterRequest
+from Backend.utils.retrieval import retrieve
+from Backend.schemas.data_classes import (
+    ChatCreateRequest,
+    ChatUpdateRequest,
+    EvalGenerateRequest,
+    EvalRunRequest,
+    LoginResponse,
+    QueryRequest,
+    RegisterRequest,
+)
 from Backend.utils.auth import (
     CurrentUserDep,
     authenticate_user,
     create_access_token,
     register_user,
 )
-from dotenv import load_dotenv
 #end of imports
 
+logger = logging.getLogger(__name__)
 
 load_dotenv()
+settings = get_settings()
+
+ALLOWED_UPLOAD_TYPES = {"csv", "md", "pdf", "txt"}
+UPLOAD_PARSERS = {
+    "csv": parseCSV,
+    "pdf": parsePDF,
+    "md": parseMD,
+    "txt": parseTXT,
+}
 
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=[settings.frontend_origin],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -66,56 +99,74 @@ async def login(form_data: Annotated[OAuth2PasswordRequestForm, Depends()]):
 async def me(current_user: CurrentUserDep):
     return current_user
 
+
 @app.post("/upload")
 async def upload(
     current_user: CurrentUserDep,
     file: UploadFile = File(...),
 ):
     document_id = str(uuid.uuid4())
-    allowed_types = ["csv","md","pdf"]
-    suffix = file.filename.split('.')[-1]
-    file_name = file.filename.split('.')[0]
-    if(suffix not in allowed_types):
-        return {"error":"file not supported"}
-    UPLOAD_DIR = Path("/home/kaniss/RAG_personal/Backend/documents/")
+    suffix = file.filename.rsplit(".", 1)[-1].lower()
+    file_name = file.filename.rsplit(".", 1)[0]
+    if suffix not in ALLOWED_UPLOAD_TYPES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File type not supported")
+
+    settings.documents_dir.mkdir(parents=True, exist_ok=True)
     saved_name = f"{document_id}.{suffix}"
-    file_path = UPLOAD_DIR.joinpath(saved_name)
+    file_path = settings.documents_dir / saved_name
     with file_path.open("wb") as buffer:
         copyfileobj(file.file, buffer)
-    InsertedID = await Mongo_document_upload(original_file_name=file_name,saved_file_name=document_id, file_type=suffix, source=str(file_path), user_id=current_user.id)
 
-    match suffix:
-        case "csv":
-            documents = parseCSV(file_path, str(InsertedID.inserted_id), file_name)
-        case "pdf":
-            documents = parsePDF(file_path, str( InsertedID.inserted_id), file_name)
-        case "md":
-            documents = parseMD(file_path, str(InsertedID.inserted_id), file_name)
-        case "txt":
-            documents = parseTXT(file_path, str(InsertedID.inserted_id), file_name)
+    inserted = await Mongo_document_upload(
+        original_file_name=file_name,
+        saved_file_name=document_id,
+        file_type=suffix,
+        source=str(file_path),
+        user_id=current_user.id,
+    )
+
+    parser = UPLOAD_PARSERS[suffix]
+    documents = parser(file_path, str(inserted.inserted_id), file_name)
     for document in documents:
         document.metadata["user_id"] = current_user.id
     ingest(documents)
-    
+
     return {
-        "saved_filename": f"{document_id}.{suffix}",
-        "filename": file.filename
+        "saved_filename": saved_name,
+        "filename": file.filename,
     }
+
+
 @app.post("/query")
 async def query(
     request: QueryRequest,
     current_user: CurrentUserDep,
-)-> dict:
+):
     final_query, chunks, grounding = await retrieve(
         request.docs,
         request.query,
         current_user.id,
         request.chat_history[-10:],
+        threshold=request.threshold,
     )
-    return {
-        "context":chunks,
-        "grounding": grounding,
-        "final_query":final_query}
+
+    async def generate():
+        client = get_ollama_client()
+
+        stream = await client.generate(
+            model=settings.generation_model,
+            prompt=final_query,
+            stream=True,
+        )
+
+        async for chunk in stream:
+            yield chunk["response"]
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/plain"
+    )
+
 
 @app.post("/chats")
 async def create_chat_endpoint(
@@ -124,9 +175,11 @@ async def create_chat_endpoint(
 ):
     return await create_chat(request.docs, request.chat_name, current_user.id)
 
+
 @app.get("/chats")
 async def get_chats_endpoint(current_user: CurrentUserDep):
     return await get_chats(current_user.id)
+
 
 @app.patch("/chats/{chat_id}")
 async def update_chat_endpoint(
@@ -139,12 +192,71 @@ async def update_chat_endpoint(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found")
     return chat
 
+
+@app.delete("/chats/{chat_id}")
+async def delete_chat_endpoint(
+    current_user: CurrentUserDep,
+    chat_id: str,
+):
+    deleted = await delete_chat(current_user.id, chat_id)
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found")
+    return {"deleted": True}
+
+
 @app.get("/all-docs")
-async def function(current_user: CurrentUserDep):
-    response = await get_all_docs(current_user.id)
-    return response
+async def list_documents(current_user: CurrentUserDep):
+    return await get_all_docs(current_user.id)
 
 
 @app.get("/knowledge-graph")
 async def knowledge_graph(current_user: CurrentUserDep):
     return await build_knowledge_graph(current_user.id)
+
+
+@app.post("/eval/generate")
+async def generate_eval_set(
+    request: EvalGenerateRequest,
+    current_user: CurrentUserDep,
+):
+    questions = await generate_golden_set(current_user.id, request.num_questions, request.doc_ids)
+    return await save_eval_questions(questions)
+
+
+@app.get("/eval/questions")
+async def list_eval_questions(current_user: CurrentUserDep):
+    return await get_eval_questions(current_user.id)
+
+
+@app.post("/eval/run")
+async def run_eval(
+    request: EvalRunRequest,
+    current_user: CurrentUserDep,
+):
+    questions = await get_eval_questions(current_user.id)
+    if request.doc_ids:
+        questions = [q for q in questions if q["expected_document_id"] in request.doc_ids]
+    if not questions:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No eval questions available. Generate a golden set first.",
+        )
+
+    summary, results = await run_evaluation(current_user.id, questions, request.k, request.doc_ids)
+    return await save_eval_run(current_user.id, summary, [r.model_dump() for r in results])
+
+
+@app.get("/eval/runs")
+async def list_eval_runs(current_user: CurrentUserDep):
+    return await get_eval_runs(current_user.id)
+
+
+@app.get("/eval/runs/{run_id}")
+async def get_eval_run_endpoint(
+    run_id: str,
+    current_user: CurrentUserDep,
+):
+    run = await get_eval_run(current_user.id, run_id)
+    if not run:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Eval run not found")
+    return run
